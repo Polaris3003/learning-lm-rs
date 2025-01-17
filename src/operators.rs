@@ -126,7 +126,36 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    // Check tensor dimensions
+    assert_eq!(a.shape().len(), 2, "A must be a 2D matrix");
+    assert_eq!(b.shape().len(), 2, "B must be a 2D matrix");
+    assert_eq!(c.shape().len(), 2, "C must be a 2D matrix");
+    
+    let a_rows = a.shape()[0];
+    let a_cols = a.shape()[1];
+    let b_rows = b.shape()[0];
+    let b_cols = b.shape()[1];
+    
+    // Check matrix multiplication compatibility
+    assert_eq!(a_cols, b_cols, "A's columns must match B's columns for A @ B^T");
+    assert_eq!(a_rows, c.shape()[0], "C's rows must match A's rows");
+    assert_eq!(b_rows, c.shape()[1], "C's columns must match B's rows");
+    
+    let a_data = a.data();
+    let b_data = b.data();
+    let c_data = unsafe { c.data_mut() };
+    
+    // Perform matrix multiplication with B transposed
+    for i in 0..a_rows {
+        for j in 0..b_rows {
+            let mut sum = 0.0;
+            for k in 0..a_cols {
+                sum += a_data[i * a_cols + k] * b_data[j * b_cols + k];
+            }
+            let idx = i * b_rows + j;
+            c_data[idx] = beta * c_data[idx] + alpha * sum;
+        }
+    }
 }
 
 // Dot product of two tensors (treated as vectors)

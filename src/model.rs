@@ -167,7 +167,29 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    todo!("Implement mlp");
+    // 1. RMS normalization
+    OP::rms_norm(hidden_states, residual, rms_w, eps);
+    
+    // 2. Gate projection
+    OP::matmul_transb(gate, 0., hidden_states, w_gate, 1.0);
+    
+    // 3. Up projection
+    OP::matmul_transb(up, 0., hidden_states, w_up, 1.0);
+    
+    // 4. SwiGLU activation
+    OP::swiglu(up, gate);
+    
+    // 5. Down projection
+    OP::matmul_transb(hidden_states, 0., up, w_down, 1.0);
+    
+    // 6. Residual connection
+    //residual+hidden_states
+    let data = unsafe {
+        residual.data_mut()
+    };
+    for i in 0..data.len() {
+        data[i] += hidden_states.data()[i];
+    }
 }
 
 #[test]

@@ -71,7 +71,40 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    // Check tensor dimensions
+    assert_eq!(x.shape(), y.shape(), "Input and output tensors must have same shape");
+    assert_eq!(w.shape()[0], x.shape()[x.shape().len() - 1], "Weight vector length must match last dimension of input");
+
+    let n = x.shape()[x.shape().len() - 1] as f32;
+    let last_dim = x.shape().len() - 1;
+    
+    // Get mutable access to the underlying data
+    let y_data = unsafe { y.data_mut() };
+    let x_data = x.data();
+    let w_data = w.data();
+    
+    // Iterate through all vectors in the last dimension
+    let total_elements = x.shape().iter().product::<usize>();
+    let vector_length = x.shape()[last_dim];
+    let num_vectors = total_elements / vector_length;
+    
+    for vec_idx in 0..num_vectors {
+        // Calculate sum of squares
+        let mut sum_squares = 0.0;
+        for i in 0..vector_length {
+            let idx = vec_idx * vector_length + i;
+            sum_squares += x_data[idx].powi(2);
+        }
+        
+        // Calculate RMS value
+        let rms = (sum_squares / n + epsilon).sqrt();
+        
+        // Apply normalization and weights
+        for i in 0..vector_length {
+            let idx = vec_idx * vector_length + i;
+            y_data[idx] = w_data[i] * x_data[idx] / rms;
+        }
+    }
 }
 
 // y = silu(x) * y

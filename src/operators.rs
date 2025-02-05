@@ -71,39 +71,30 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    // Check tensor dimensions
-    assert_eq!(x.shape(), y.shape(), "Input and output tensors must have same shape");
-    assert_eq!(w.shape()[0], x.shape()[x.shape().len() - 1], "Weight vector length must match last dimension of input");
-
-    let n = x.shape()[x.shape().len() - 1] as f32;
-    let last_dim = x.shape().len() - 1;
-    
-    // Get mutable access to the underlying data
     let y_data = unsafe { y.data_mut() };
-    let x_data = x.data();
-    let w_data = w.data();
-    
-    // Iterate through all vectors in the last dimension
-    let total_elements = x.shape().iter().product::<usize>();
-    let vector_length = x.shape()[last_dim];
-    let num_vectors = total_elements / vector_length;
-    
-    for vec_idx in 0..num_vectors {
-        // Calculate sum of squares
-        let mut sum_squares = 0.0;
-        for i in 0..vector_length {
-            let idx = vec_idx * vector_length + i;
-            sum_squares += x_data[idx].powi(2);
-        }
-        
-        // Calculate RMS value
-        let rms = (sum_squares / n + epsilon).sqrt();
-        
-        // Apply normalization and weights
-        for i in 0..vector_length {
-            let idx = vec_idx * vector_length + i;
-            y_data[idx] = w_data[i] * x_data[idx] / rms;
-        }
+
+    let mut shape = vec![];
+    if x.shape().len() == 1 {
+        shape.push(1);
+        shape.push(x.shape()[0]);
+    } else {
+        shape = x.shape().clone();
+    }
+    for i in 0..shape[0] {
+        let row_range = i * shape[1]..(i + 1) * shape[1];
+        let sq = ((x.data()[row_range.clone()]
+            .iter()
+            .map(|&x| x.powi(2))
+            .sum::<f32>()
+            / shape[1] as f32)
+            + epsilon)
+            .sqrt();
+        y_data[row_range.clone()]
+            .iter_mut()
+            .zip(x.data()[row_range].iter().zip(w.data().iter()))
+            .for_each(|(y_d, (x_d, w_d))| {
+                *y_d = (*w_d * *x_d) / sq;
+            });
     }
 }
 
@@ -154,6 +145,82 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
             }
             let idx = i * b_rows + j;
             c_data[idx] = beta * c_data[idx] + alpha * sum;
+        }
+    }
+}
+
+pub fn vec_multi(c: &mut Tensor<f32>, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32, t: bool) {
+    assert!(
+        c.shape().len() > 2,
+        "vec_multi of dimensions must be at least 2"
+    );
+    assert!(a.shape().len() == 2, "vec_multi of dimensions must be 2");
+    assert!(b.shape().len() == 2, "vec_multi of dimensions must be 2");
+    let shape = c.shape();
+    let (row, column) = (shape[shape.len() - 2], shape[shape.len() - 1]);
+    let q_head_len = shape[..shape.len() - 2].iter().product::<usize>();
+    let q_k_reflect = a.shape()[1] / b.shape()[1];
+    let vec_len = a.shape()[1] / q_head_len;
+    let a_data = a.data();
+    let a_skip = a.shape()[1];
+    let b_data = b.data();
+    let b_skip = b.shape()[1];
+    let data = unsafe { c.data_mut() };
+    data.fill(0.);
+    let mut c_data_offset = 0;
+    if t {
+        for i in 0..q_head_len {
+            for j in 0..row {
+                let a_tmp =
+                    &a_data[(i * vec_len + j * a_skip)..(i * vec_len + j * a_skip) + vec_len];
+                for k in 0..column {
+                    let b_tmp = &b_data[(k * b_skip + (i / q_k_reflect) * vec_len)
+                        ..(k * b_skip + (i / q_k_reflect) * vec_len) + vec_len];
+                    data[c_data_offset] = a_tmp
+                        .iter()
+                        .zip(b_tmp.iter())
+                        .fold(0., |tmp, (a_val, b_val)| tmp + a_val * b_val)
+                        * alpha;
+                    c_data_offset += 1;
+                }
+            }
+        }
+    }
+}
+
+pub fn vec_multi_wight(c: &mut Tensor<f32>, a: &Tensor<f32>, b: &Tensor<f32>) {
+    assert!(
+        b.shape().len() == 2,
+        "matmul_transb of dimensions must be at least 2"
+    );
+    assert!(
+        a.shape().len() == 4,
+        "matmul_transb of dimensions must be  4 是att_scores)"
+    );
+    let q_header_len = a.shape()[..a.shape().len() - 2].iter().product::<usize>();
+    let shape = a.shape();
+    let (row, column) = (shape[shape.len() - 2], shape[shape.len() - 1]);
+    let vec_len = b.shape()[1] / a.shape()[0];
+    let n_groups = a.shape()[1];
+    let b_column = b.shape()[1];
+    let mut data = unsafe { c.data_mut() };
+    data.fill(0.);
+    for i in 0..q_header_len {
+        let a_data = &a.data()[i * row * column..(i + 1) * row * column];
+        for c_i in 0..row {
+            let mut b_data_row_offset = 0;
+            let tmp_c_offset = n_groups * b_column * c_i + i * vec_len;
+            let tmp_c = &mut data[tmp_c_offset..tmp_c_offset + vec_len];
+            a_data[c_i * column..(c_i + 1) * column]
+                .iter()
+                .for_each(|tmp| {
+                    let tmp_offset = b_data_row_offset * b_column + (i / n_groups) * vec_len;
+                    let b_data = &b.data()[tmp_offset..tmp_offset + vec_len];
+                    b_data.iter().zip(tmp_c.iter_mut()).for_each(|(t_b, t_c)| {
+                        *t_c += t_b * tmp;
+                    });
+                    b_data_row_offset += 1;
+                });
         }
     }
 }

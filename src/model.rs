@@ -100,11 +100,46 @@ impl Llama<f32> {
 
             let full_k = &mut cache.k_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
             let full_v = &mut cache.v_cache(layer, 0); // (total_seq, n_kv_h * dqkv)
+            //todo!("self_attention(...)");
+            {
+                // score = Q @ K.T / sqrt(dim)
+                q.reshape(&vec![seq_len, self.n_q_h * self.dqkv]);
+                OP::vec_multi(
+                    &mut att_scores,
+                    q,
+                    full_k,
+                    1. / (self.dqkv as f32).sqrt(),
+                    true,
+                );
+                //attn = softmax(score)
+                OP::masked_softmax(&mut att_scores);
+                //attn_V = attn @ V
+                OP::vec_multi_wight(&mut hidden_states, &att_scores, &full_v);
+                //out = attn_V @ O_weight.T
+                //residual = out + residual
+                OP::matmul_transb(
+                    &mut residual,
+                    1.,
+                    &hidden_states,
+                    &self.params.wo[layer],
+                    1.,
+                )
+            }
+            
+            // todo!("down_proj matmul and add residual");
 
-            todo!("self_attention(...)");
-            todo!("down_proj matmul and add residual");
-
-            todo!("mlp(...)");
+            // todo!("mlp(...)");
+            mlp(
+                &mut residual,
+                &mut hidden_states,
+                &mut gate_buf,
+                &mut up_buf,
+                &self.params.w_up[layer],
+                &self.params.w_down[layer],
+                &self.params.w_gate[layer],
+                &self.params.rms_ffn_w[layer],
+                self.eps,
+            );
         }
 
         // No matter what seq_len, the output is always a 1D vector of length vocab,
@@ -133,10 +168,33 @@ impl Llama<f32> {
         top_k: u32,
         temperature: f32,
     ) -> Vec<u32>{
-        let mut result = Vec::<u32>::new();
-        
-        todo!("实现文本生成");
-        
+        let mut result: Vec<u32> = Vec::<u32>::new();
+        let mut cache = self.new_cache();
+        let input = Tensor::<u32>::new(Vec::from(token_ids), &vec![token_ids.len()]);
+        let mut tmp=Tensor::<u32>::new(vec![OP::random_sample(
+            &self.forward(&input, &mut cache),
+            top_p,
+            top_k,
+            temperature,
+        )],&vec![1]) ;
+  
+        result.push(tmp.data()[0]);
+        for _ in 0..max_len{
+            let tt=OP::random_sample(
+                &self.forward(&tmp, &mut cache),
+                top_p,
+                top_k,
+                temperature,
+            );
+            // check if <|end_story|>
+            if tt==2 {
+                break;
+            }
+            result.push(tt);
+            unsafe {
+                tmp.data_mut()[0]=tt;
+            }
+        }
         result
     }
 }
